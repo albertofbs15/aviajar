@@ -12,17 +12,16 @@ import akka.http.javadsl.model.StatusCodes;
 import akka.http.javadsl.server.*;
 import akka.stream.ActorMaterializer;
 import akka.stream.javadsl.Flow;
-import domain.Convenio.IntermediateRoutingServiceProvider;
-import domain.Convenio.IntermediateRoutingService;
-import domain.Convenio.entity.Compensacion;
-import domain.Convenio.entity.Pago;
-import domain.Convenio.entity.Respuesta;
-import servicios.dispatcher.DispatcherServiceProvider;
-import servicios.localizacion.LocalizacionServiceProvider;
-import servicios.transformacion.TransformationServiceProvider;
+import domain.commands.Operacion;
+import domain.commands.RegistrarProveedor;
+import domain.entity.*;
+import servicios.proveedor.ProveedorServiceProvider;
+import util.JacksonJdk8;
 
 import java.time.LocalDate;
-import java.util.concurrent.CompletableFuture;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CompletionStage;
 
 /**
@@ -30,10 +29,6 @@ import java.util.concurrent.CompletionStage;
  */
 
 public class HttpAesDirective extends AllDirectives {
-
-    private final IntermediateRoutingService intermediateRouting = new IntermediateRoutingServiceProvider(
-            new LocalizacionServiceProvider(), new TransformationServiceProvider(), new DispatcherServiceProvider()
-    );
 
     public static void main(String[] args) throws Exception {
         ActorSystem system = ActorSystem.create("routes");
@@ -43,11 +38,12 @@ public class HttpAesDirective extends AllDirectives {
 
         HttpAesDirective app = new HttpAesDirective();
 
+
         final Flow<HttpRequest, HttpResponse, NotUsed> routeFlow = app.createRoute().flow(system, materializer);
         final CompletionStage<ServerBinding> binding = http.bindAndHandle(routeFlow,
-                ConnectHttp.toHost("localhost", 9090), materializer);
+                ConnectHttp.toHost("localhost", 9080), materializer);
 
-        System.out.println("Server online at http://localhost:9090/\nPress RETURN to stop...");
+        System.out.println("Server online at http://localhost:9080/\nPress RETURN to stop...");
         System.in.read();
 
         binding.thenCompose(ServerBinding::unbind)
@@ -57,38 +53,154 @@ public class HttpAesDirective extends AllDirectives {
     private Route createRoute() {
         return route(
                 pathPrefix("servicios", () ->
-                        pathPrefix("factura", () ->
-                                route(
-                                        get(() -> route(path(idFactura -> handleConsultarFactura(idFactura)))),
-                                        put(() -> route(pathPrefix(facturaId -> route(
-                                                pathPrefix("pagar", () -> handlePagarFactura(null)),
-                                                pathPrefix("compensar", () -> handleCompensarPagoFactura(null))
-                                        ))))
-                                )
-                        )
+                        post( () -> route(
+                                path("operacion", () -> entity(JacksonJdk8.unmarshaller(Operacion.class), operacion -> handleOperacion(operacion))),
+                                path("registrarProveedor", () -> entity(JacksonJdk8.unmarshaller(RegistrarProveedor.class), opregistrarProveedorracion -> handleRegistrarProveedor(opregistrarProveedorracion)))
+                        ))
                 )
         );
     }
 
-    private Route handleConsultarFactura(String idFactura) {
-        System.out.println(LocalDate.now() + ": handleConsultarFactura ");
-        CompletableFuture<Respuesta> response = intermediateRouting.consultarFactura(idFactura);
-        Respuesta respuesta = response.join();
-        return complete(StatusCodes.OK, respuesta, Jackson.<Respuesta>marshaller());
+    private Route handleRegistrarProveedor(RegistrarProveedor opregistrarProveedorracion) {
+        System.out.println(LocalDate.now() + ": handleRegistrarProveedor ");
+        Proveedores.proveedorManager.addProveedor(opregistrarProveedorracion.getTipoServicio(), opregistrarProveedorracion.getHost(), opregistrarProveedorracion.getPuerto());
+        return complete(StatusCodes.OK);
     }
 
-    private Route handlePagarFactura(Pago pago) {
-        System.out.println(LocalDate.now() + ": handlePagarFactura ");
-        CompletableFuture<Respuesta> response = intermediateRouting.pagoFactura(pago);
-        Respuesta respuesta = response.join();
-        return complete(StatusCodes.OK, respuesta, Jackson.<Respuesta>marshaller());
+    private Route handleOperacion(Operacion operacion) {
+        System.out.println(LocalDate.now() + ": handleOperacion ");
+        ProveedorServiceProvider proveedor = new ProveedorServiceProvider();
+
+        if (operacion.getTipoOperacion().equals("cot")) {
+
+            List<Proveedor> prove = new ArrayList<>();
+            if  (operacion.getTipoServicion().equals("paquete")) {
+                prove.add(proveedorMasEconomico(operacion, "aereo"));
+                prove.add(proveedorMasEconomico(operacion, "terrestre"));
+                prove.add(proveedorMasEconomico(operacion, "paseo"));
+                prove.add(proveedorMasEconomico(operacion, "alojamiento"));
+            } else {
+                prove.add(proveedorMasEconomico(operacion, operacion.getTipoServicion()));
+            }
+            PaqueteConsulta paquete = new PaqueteConsulta();
+
+            if (prove.size() > 0) {
+                for (Proveedor p :  prove) {
+                    if (p != null) {
+                        paquete.getRespuestaConsultaDisponibilidads().add(proveedor.consultarProveedor(p, operacion));
+                    }
+                }
+            }
+
+            return complete(StatusCodes.OK, paquete, Jackson.<PaqueteConsulta>marshaller());
+
+        } else if (operacion.getTipoOperacion().equals("res")) {
+            List<Proveedor> prove = new ArrayList<>();
+            if  (operacion.getTipoOperacion().equals("paquete")) {
+                prove.add(proveedorMasEconomico(operacion, "aereo"));
+                prove.add(proveedorMasEconomico(operacion, "terrestre"));
+                prove.add(proveedorMasEconomico(operacion, "paseo"));
+                prove.add(proveedorMasEconomico(operacion, "alojamiento"));
+            } else {
+                prove.add(proveedorMasEconomico(operacion, operacion.getTipoServicion()));
+            }
+
+            PaqueteConsultaConID paquete = new PaqueteConsultaConID();
+            if (prove.size() > 0) {
+                ArrayList<ReservaProveedor> reservaProveedors = new ArrayList<>();
+                for (Proveedor p :  prove) {
+                    if (p != null) {
+                        RespuestaConsultaDisponibilidadConID resp = proveedor.reservarProveedor(p, operacion);
+                        if (resp.getId() > -1) {
+                            paquete.getRespuesta().add(resp);
+                            reservaProveedors.add(new ReservaProveedor(resp.getId(), p, resp.getCostoTotal()));
+                        }
+                    }
+                }
+
+                if (reservaProveedors.size()>0) {
+                    long total = paquete.getRespuesta().stream().mapToLong(RespuestaConsultaDisponibilidadConID::getCostoTotal).sum();
+                    paquete.setTotal(total);
+                    paquete.setIdReserva(Reservas.saveReserva(reservaProveedors));
+                }
+            }
+            return complete(StatusCodes.OK, paquete, Jackson.<PaqueteConsultaConID>marshaller());
+        }else if (operacion.getTipoOperacion().equals("can")) {
+
+
+            ArrayList<ReservaProveedor> reservaProveedors = Reservas.getReserva(operacion.getIdReserva());
+
+            RespuestaCancelacion respuestaCancelacion = new RespuestaCancelacion();
+            respuestaCancelacion.setIdReserva(operacion.getIdReserva());
+
+            long total = 0;
+            for (ReservaProveedor reserva : reservaProveedors) {
+                total +=reserva.getValor();
+                proveedor.cancelarReservaProveedor(reserva.getProveedor(), operacion, operacion.getIdReserva());
+            }
+
+            respuestaCancelacion.setValorDevolucion(total);
+
+            return complete(StatusCodes.OK, respuestaCancelacion, Jackson.<RespuestaCancelacion>marshaller());
+        }
+        return  null;
     }
 
-    private Route handleCompensarPagoFactura(Compensacion compensacion) {
-        System.out.println(LocalDate.now() + ": handleCompensarPagoFactura ");
-        CompletableFuture<Respuesta> response = intermediateRouting.compensarPagoFactura(compensacion);
-        Respuesta respuesta = response.join();
-        return complete(StatusCodes.OK, respuesta, Jackson.<Respuesta>marshaller());
+
+    public ArrayList<Proveedor> asdfasdf (Operacion operacion){
+        ProveedorServiceProvider serviceProvider = new ProveedorServiceProvider();
+
+        List<Proveedor> prove = Proveedores.proveedorManager.getProveedores().get(operacion.getTipoServicion());
+        if (prove == null)
+            return null;
+        PaqueteConsulta paquete = new PaqueteConsulta();
+
+        RespuestaConsultaDisponibilidad minima = new RespuestaConsultaDisponibilidad();
+        Proveedor minProveedor = null;
+        if (prove.size() > 0) {
+            for (Proveedor p :  prove) {
+                RespuestaConsultaDisponibilidad nuevo = serviceProvider.consultarProveedor(p, operacion);
+
+                if (minima.getTipoServivio() == null) {
+                    minima = nuevo;
+                    minProveedor = p;
+                }else if (minima.getCostoTotal() > nuevo.getCostoTotal()) {
+                    minProveedor = p;
+                    minima = nuevo;
+                }
+            }
+        }
+
+        ArrayList<Proveedor>  array = new ArrayList<>();
+        array.add(minProveedor);
+        return array;
+
     }
 
+    public Proveedor proveedorMasEconomico(Operacion operacion, String tipoServicio){
+        ProveedorServiceProvider serviceProvider = new ProveedorServiceProvider();
+
+        List<Proveedor> prove = Proveedores.proveedorManager.getProveedores().get(tipoServicio);
+        if (prove == null)
+            return null;
+        PaqueteConsulta paquete = new PaqueteConsulta();
+
+        RespuestaConsultaDisponibilidad minima = new RespuestaConsultaDisponibilidad();
+        Proveedor minProveedor = null;
+        if (prove.size() > 0) {
+            for (Proveedor p :  prove) {
+                RespuestaConsultaDisponibilidad nuevo = serviceProvider.consultarProveedor(p, operacion);
+
+                if (minima.getTipoServivio() == null) {
+                    minima = nuevo;
+                    minProveedor = p;
+                }else if (minima.getCostoTotal() > nuevo.getCostoTotal()) {
+                    minProveedor = p;
+                    minima = nuevo;
+                }
+            }
+        }
+
+        return minProveedor;
+    }
 }
